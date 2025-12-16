@@ -38,6 +38,6 @@ This Space is part of a larger personal project combining:
 
 * Lichess game data processing
 * Machine learning for opening recommendation
-* A Next.js / TypeScript frontend consuming this model as a service
+* A Next.js / TypeScript frontend consuming this model as a service (TBA)
 
 ---
