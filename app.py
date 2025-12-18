@@ -14,6 +14,13 @@ class Side(str, Enum):
 
 # --- Request Models ---
 
+class PlayerInfo(BaseModel):
+    """Player information"""
+    player_id: str = Field(description="Unique player identifier")
+    username: str = Field(description="Player username")
+    rating_normalized: float = Field(description="Normalized player rating")
+    site: Literal["lichess", "chess.com"] = Field(default="lichess", description="Chess platform")
+
 class OpeningStats(BaseModel):
     """Stats for a single opening from player's history"""
     opening_name: str
@@ -24,6 +31,7 @@ class OpeningStats(BaseModel):
     
 class PredictRequest(BaseModel):
     side: Side
+    player: PlayerInfo
     openings: List[OpeningStats] = Field(
         default_factory=list,
         description="List of openings with player's historical performance"
@@ -113,6 +121,10 @@ async def predict(request: PredictRequest):
     """
     # Generate unique request ID
     request_id = str(uuid.uuid4())
+    
+    # Log player info (for future model inference)
+    print(f"Processing prediction for player: {request.player.username} "
+          f"(ID: {request.player.player_id}, Rating: {request.player.rating_normalized}, Site: {request.player.site})")
     
     # Select dummy openings based on side
     dummy_pool = DUMMY_OPENINGS_WHITE if request.side == Side.WHITE else DUMMY_OPENINGS_BLACK

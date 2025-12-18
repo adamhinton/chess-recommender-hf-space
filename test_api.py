@@ -17,6 +17,12 @@ def test_predict_white():
     """Test prediction for white"""
     data = {
         "side": "white",
+        "player": {
+            "player_id": "test123",
+            "username": "TestPlayer",
+            "rating_normalized": 0.65,
+            "site": "lichess"
+        },
         "openings": []
     }
     response = requests.post(f"{BASE_URL}/predict", json=data)
@@ -28,6 +34,12 @@ def test_predict_black():
     """Test prediction for black"""
     data = {
         "side": "black",
+        "player": {
+            "player_id": "test456",
+            "username": "AnotherPlayer",
+            "rating_normalized": 0.72,
+            "site": "lichess"
+        },
         "openings": []
     }
     response = requests.post(f"{BASE_URL}/predict", json=data)
@@ -39,6 +51,12 @@ def test_predict_with_openings():
     """Test prediction with opening data"""
     data = {
         "side": "white",
+        "player": {
+            "player_id": "test789",
+            "username": "ExperiencedPlayer",
+            "rating_normalized": 0.82,
+            "site": "lichess"
+        },
         "openings": [
             {
                 "opening_name": "Italian Game",
