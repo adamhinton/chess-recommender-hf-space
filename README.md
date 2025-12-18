@@ -17,7 +17,79 @@ Check out the configuration reference at https://huggingface.co/docs/hub/spaces-
 
 This Hugging Face Space hosts the **inference layer** for a chess opening recommender system.
 
-The underlying project trains separate machine-learning models for **White** and **Black** using a player’s Lichess game history and predicts expected performance (score) across chess openings. This Space exposes those models for lightweight inference and integration with a web frontend.
+The underlying project trains separate machine-learning models for **White** and **Black** using a player's Lichess game history and predicts expected performance (score) across chess openings. This Space exposes those models for lightweight inference and integration with a web frontend.
+
+## Local Development
+
+### Start the server
+```bash
+# Create and activate virtual environment (first time only)
+python3 -m venv venv
+source venv/bin/activate
+
+# Install dependencies
+pip install fastapi uvicorn pydantic
+
+# Start the server
+uvicorn app:app --port 7860
+```
+
+### Kill the server
+Press `Ctrl+C` in the terminal, or if running in background:
+```bash
+kill %1
+```
+
+### Test the API
+
+**Health check:**
+```bash
+curl http://127.0.0.1:7860/health
+```
+
+**Predict for White:**
+```bash
+curl -X POST http://127.0.0.1:7860/predict \
+  -H "Content-Type: application/json" \
+  -d '{
+    "side": "white",
+    "player": {
+      "player_id": "test123",
+      "username": "TestPlayer",
+      "rating_normalized": 0.65,
+      "site": "lichess"
+    },
+    "openings": []
+  }'
+```
+
+**Predict for Black:**
+```bash
+curl -X POST http://127.0.0.1:7860/predict \
+  -H "Content-Type: application/json" \
+  -d '{
+    "side": "black",
+    "player": {
+      "player_id": "test456",
+      "username": "AnotherPlayer",
+      "rating_normalized": 0.72,
+      "site": "lichess"
+    },
+    "openings": []
+  }'
+```
+
+**Run test script:**
+```bash
+source venv/bin/activate
+pip install requests
+python test_api.py
+```
+
+**API Documentation:**
+Visit http://127.0.0.1:7860/docs for interactive Swagger UI
+
+---
 
 ## Repository contents
 
