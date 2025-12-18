@@ -1,13 +1,17 @@
-FROM python:3.9
-
-RUN useradd -m -u 1000 user
-USER user
-ENV PATH="/home/user/.local/bin:$PATH"
+FROM python:3.10-slim
 
 WORKDIR /app
 
-COPY --chown=user ./requirements.txt requirements.txt
-RUN pip install --no-cache-dir --upgrade -r requirements.txt
+# Copy requirements and install dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-COPY --chown=user . /app
+# Copy application code and artifacts
+COPY app.py .
+COPY artifacts/ ./artifacts/
+
+# Expose port 7860 (Hugging Face Spaces default)
+EXPOSE 7860
+
+# Run the application
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "7860"]
