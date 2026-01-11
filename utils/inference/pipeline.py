@@ -18,8 +18,8 @@ import json
 import pandas as pd
 import numpy as np
 
-# import torch
-# import torch.nn as nn
+import torch
+import torch.nn as nn
 
 from utils.types.inference_pipeline_types import PlayerData, ModelInput
 
