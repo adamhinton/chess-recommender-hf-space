@@ -15,7 +15,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 import json
-import pandas as pd
 import numpy as np
 
 import torch
