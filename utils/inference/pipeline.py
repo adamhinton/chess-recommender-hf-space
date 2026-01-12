@@ -34,17 +34,17 @@ class PipelineConfig:
     color: str
 
     # Filtering thresholds
-    min_games_threshold: int = 3
+    min_games_threshold = 3
 
     # Bayesian shrinkage strength (must match training)
-    k_shrinkage: int = 50
+    k_shrinkage = 50
 
     # Verbosity level (0=silent, 1=progress, 2=detailed)
-    verbose: int = 1
+    verbose = 1
 
     # Inference configuration
-    top_n_recommendations: int = 50
-    inference_batch_size: int = 512
+    top_n_recommendations = 50
+    inference_batch_size = 512
     device: str = "auto"  # "auto", "cpu", "cuda"
 
     def __post_init__(self):
