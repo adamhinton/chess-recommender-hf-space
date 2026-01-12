@@ -7,6 +7,10 @@ import uuid
 import pandas as pd
 from pathlib import Path
 
+from utils.inference.pipeline import PipelineConfig, run_foldin_pipeline
+
+
+
 # --- Enums and Types ---
 
 class Side(str, Enum):
@@ -160,78 +164,76 @@ async def health_check():
 
 @app.post("/predict", response_model=PredictResponse)
 async def predict(request: PredictRequest):
-    """
-    Generate chess opening recommendations based on player history.
-    
-    Currently returns dummy data. Will be replaced with actual model inference.
-    """
-    # Convert request to PlayerData format (for validation)
+    """Generate chess opening recommendations based on player history."""
     player_data = convert_predict_request_to_player_data(request)
-    
-    # Generate unique request ID
     request_id = str(uuid.uuid4())
     
-    print(f"Processing prediction for player: {player_data.name} "
-          f"(Rating: {player_data.rating}, Color: {player_data.color})")
+    # Select artifacts based on side
+    artifacts = _artifacts_white if request.side == Side.WHITE else _artifacts_black
+    config = artifacts.config if artifacts else None
     
-    # Dummy openings for each side
-    dummy_openings_white = [
-        ("Italian Game", "C50", 0.52),
-        ("Ruy Lopez", "C70", 0.50),
-        ("Queen's Gambit", "D06", 0.51),
-    ]
+    if not artifacts or not config:
+        raise HTTPException(status_code=503, detail="Models not loaded")
     
-    dummy_openings_black = [
-        ("Sicilian Defense", "B20", 0.53),
-        ("French Defense", "C00", 0.51),
-        ("Caro-Kann Defense", "B10", 0.50),
-    ]
-    
-    # Select dummy openings based on side
-    dummy_pool = dummy_openings_white if request.side == Side.WHITE else dummy_openings_black
-    
-    # Generate dummy recommendations
-    recommendations = []
-    for opening_name, eco, score in dummy_pool:
-        recommendations.append(
-            Recommendation(
-                opening_name=opening_name,
-                eco=eco,
-                predicted_score=score,
-            )
+    try:
+        result = run_foldin_pipeline(
+            player_data=player_data,
+            config=config,
+            artifacts=artifacts
         )
-    
-    # Sort by predicted score (descending)
-    recommendations.sort(key=lambda x: x.predicted_score, reverse=True)
-    
-    return PredictResponse(
-        request_id=request_id,
-        side=request.side,
-        recommendations=recommendations,
-        stats=RecommendationStats(
-            num_openings_total=600,
-            num_openings_played=len(request.opening_stats),
-            num_openings_unplayed=1700 - len(request.opening_stats),
-            predicted_min=0.45,
-            predicted_max=0.65,
-            predicted_mean=0.52,
-        ),
-        model_loaded=False,
-        model_version="dummy"
-    )
+        
+        return PredictResponse(
+            request_id=request_id,
+            side=request.side,
+            recommendations=[
+                Recommendation(
+                    opening_name=rec["opening_name"],
+                    eco=rec["eco"],
+                    predicted_score=rec["predicted_score"]
+                )
+                for rec in result["recommendations"]
+            ],
+            stats=RecommendationStats(
+                num_openings_total=result["stats"]["num_openings_total"],
+                num_openings_played=result["stats"]["num_openings_played"],
+                num_openings_unplayed=result["stats"]["num_openings_unplayed"],
+                predicted_min=result["stats"]["predicted_min"],
+                predicted_max=result["stats"]["predicted_max"],
+                predicted_mean=result["stats"]["predicted_mean"],
+            ),
+            model_loaded=True,
+            model_version="production"
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Inference failed: {str(e)}")
 
 # --- Model Loading (Placeholder) ---
 
 @app.on_event("startup")
+# TODO maybe we just start up white or black later on, 
+#   depending on which is needed?
 async def load_models():
-    """
-    Load PyTorch models on startup
+    """Load PyTorch models on startup"""
+    global _artifacts_white, _artifacts_black
+    from utils.inference.pipeline import PipelineArtifacts
     
-    TODO: Implement actual model loading from .pt files
-    """
     print("Starting Chess Opening Recommender API")
-    print("Running with dummy predictions (models not loaded)")
-    # Future: Load white_model.pt and black_model.pt here
+    artifacts_dir = Path(__file__).parent / "artifacts"
+    
+    try:
+        _artifacts_white = PipelineArtifacts(PipelineConfig(
+            model_artifacts_dir=artifacts_dir / "white",
+            color="w",
+        ))
+        _artifacts_black = PipelineArtifacts(PipelineConfig(
+            model_artifacts_dir=artifacts_dir / "black",
+            color="b",
+        ))
+        print("✓ Models loaded successfully")
+    except Exception as e:
+        print(f"✗ Failed to load models: {e}")
 
 @app.on_event("shutdown")
 async def shutdown():
