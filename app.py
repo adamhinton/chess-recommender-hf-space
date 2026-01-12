@@ -1,10 +1,11 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from typing import List, Literal
+from typing import List, Literal, Optional
 from enum import Enum
 import uuid
-import random
+import pandas as pd
+from pathlib import Path
 
 # --- Enums and Types ---
 
@@ -14,25 +15,22 @@ class Side(str, Enum):
 
 # --- Request Models ---
 
-class PlayerInfo(BaseModel):
-    """Player information"""
-    player_id: str = Field(description="Unique player identifier")
-    username: str = Field(description="Player username")
-    rating_normalized: float = Field(description="Normalized player rating")
-    site: Literal["lichess", "chess.com"] = Field(default="lichess", description="Chess platform")
-
-class OpeningStats(BaseModel):
+class OpeningStatsRequest(BaseModel):
     """Stats for a single opening from player's history"""
-    opening_name: str
-    opening_eco: str
-    win_rate: float = Field(ge=0.0, le=1.0, description="Normalized win rate")
-    num_games: int = Field(ge=0, description="Number of games played with this opening")
-    # Add more fields as needed later
-    
+    opening_name: str = Field(description="Full opening name")
+    opening_id: int = Field(description="Training opening ID")
+    eco: str = Field(description="ECO code (e.g., C50)")
+    num_games: int = Field(ge=0, description="Games played with this opening")
+    num_wins: int = Field(ge=0, description="Win count")
+    num_draws: int = Field(ge=0, description="Draw count")
+    num_losses: int = Field(ge=0, description="Loss count")
+
 class PredictRequest(BaseModel):
-    side: Side
-    player: PlayerInfo
-    openings: List[OpeningStats] = Field(
+    """Prediction request matching HFInterfacePayload from TS"""
+    name: str = Field(description="Lichess username")
+    rating: int = Field(ge=0, description="Player rating")
+    side: Side = Field(description="White or Black")
+    opening_stats: List[OpeningStatsRequest] = Field(
         default_factory=list,
         description="List of openings with player's historical performance"
     )
@@ -40,17 +38,28 @@ class PredictRequest(BaseModel):
 # --- Response Models ---
 
 class Recommendation(BaseModel):
-    opening_name: str
-    opening_eco: str
+    """Opening recommendation from the model"""
+    opening_name: str = Field(description="Full opening name")
+    eco: str = Field(description="ECO code")
     predicted_score: float = Field(ge=0.0, le=1.0, description="Expected score (0-1)")
-    confidence: float = Field(ge=0.0, le=1.0, description="Model confidence")
+
+class RecommendationStats(BaseModel):
+    """Statistics about the recommendations"""
+    num_openings_total: int = Field(description="Total openings in training set")
+    num_openings_played: int = Field(description="Openings player has played")
+    num_openings_unplayed: int = Field(description="Openings player hasn't played")
+    predicted_min: float = Field(description="Min predicted score across all openings")
+    predicted_max: float = Field(description="Max predicted score across all openings")
+    predicted_mean: float = Field(description="Mean predicted score across all openings")
 
 class PredictResponse(BaseModel):
-    request_id: str
-    side: Side
-    recommendations: List[Recommendation]
-    model_loaded: bool = False
-    model_version: str = "dummy"
+    """Recommendation response from the API"""
+    request_id: str = Field(description="Unique request identifier")
+    side: Side = Field(description="White or Black")
+    recommendations: List[Recommendation] = Field(description="Top recommended openings")
+    stats: RecommendationStats = Field(description="Statistics about predictions")
+    model_loaded: bool = Field(description="Whether model was successfully loaded")
+    model_version: str = Field(description="Model version/training date")
 
 # --- FastAPI App ---
 
@@ -69,23 +78,60 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Dummy Data ---
+# --- Utility Functions ---
 
-DUMMY_OPENINGS_WHITE = [
-    ("Italian Game", "C50"),
-    ("Ruy Lopez", "C70"),
-    ("Queen's Gambit", "D06"),
-    ("English Opening", "A10"),
-    ("King's Indian Attack", "A07"),
-]
-
-DUMMY_OPENINGS_BLACK = [
-    ("Sicilian Defense", "B20"),
-    ("French Defense", "C00"),
-    ("Caro-Kann Defense", "B10"),
-    ("Nimzo-Indian Defense", "E20"),
-    ("King's Indian Defense", "E60"),
-]
+def convert_predict_request_to_player_data(request: PredictRequest):
+    """
+    Convert FastAPI PredictRequest to PlayerData format expected by inference pipeline.
+    
+    Args:
+        request: PredictRequest from API
+        
+    Returns:
+        PlayerData object ready for pipeline processing
+        
+    Raises:
+        ValueError: If opening_stats is empty or DataFrame validation fails
+    """
+    from utils.types.inference_pipeline_types import PlayerData
+    
+    # Convert opening_stats list to DataFrame
+    opening_stats_list = []
+    for opening in request.opening_stats:
+        opening_stats_list.append({
+            "opening_id": opening.opening_id,
+            "eco": opening.eco,
+            "opening_name": opening.opening_name,
+            "num_games": opening.num_games,
+            "num_wins": opening.num_wins,
+            "num_draws": opening.num_draws,
+            "num_losses": opening.num_losses,
+        })
+    
+    opening_stats_df = pd.DataFrame(opening_stats_list)
+    
+    # Validate DataFrame has required columns
+    required_columns = {
+        "opening_id", "eco", "opening_name", 
+        "num_games", "num_wins", "num_draws", "num_losses"
+    }
+    if not required_columns.issubset(opening_stats_df.columns):
+        missing = required_columns - set(opening_stats_df.columns)
+        raise ValueError(f"Missing required columns in opening_stats: {missing}")
+    
+    # Map side to color ('w' or 'b')
+    color = 'w' if request.side == Side.WHITE else 'b'
+    
+    # Create PlayerData with dummy player_id for fold-in (new) users
+    player_data = PlayerData(
+        player_id=-1,  # Dummy ID for fold-in users (not in training set)
+        name=request.name,
+        rating=request.rating,
+        color=color,
+        opening_stats_df=opening_stats_df,
+    )
+    
+    return player_data
 
 # --- Endpoints ---
 
@@ -115,29 +161,43 @@ async def health_check():
 @app.post("/predict", response_model=PredictResponse)
 async def predict(request: PredictRequest):
     """
-    Generate chess opening recommendations based on player history
+    Generate chess opening recommendations based on player history.
     
     Currently returns dummy data. Will be replaced with actual model inference.
     """
+    # Convert request to PlayerData format (for validation)
+    player_data = convert_predict_request_to_player_data(request)
+    
     # Generate unique request ID
     request_id = str(uuid.uuid4())
     
-    # Log player info (for future model inference)
-    print(f"Processing prediction for player: {request.player.username} "
-          f"(ID: {request.player.player_id}, Rating: {request.player.rating_normalized}, Site: {request.player.site})")
+    print(f"Processing prediction for player: {player_data.name} "
+          f"(Rating: {player_data.rating}, Color: {player_data.color})")
+    
+    # Dummy openings for each side
+    dummy_openings_white = [
+        ("Italian Game", "C50", 0.52),
+        ("Ruy Lopez", "C70", 0.50),
+        ("Queen's Gambit", "D06", 0.51),
+    ]
+    
+    dummy_openings_black = [
+        ("Sicilian Defense", "B20", 0.53),
+        ("French Defense", "C00", 0.51),
+        ("Caro-Kann Defense", "B10", 0.50),
+    ]
     
     # Select dummy openings based on side
-    dummy_pool = DUMMY_OPENINGS_WHITE if request.side == Side.WHITE else DUMMY_OPENINGS_BLACK
+    dummy_pool = dummy_openings_white if request.side == Side.WHITE else dummy_openings_black
     
     # Generate dummy recommendations
     recommendations = []
-    for opening_name, opening_eco in random.sample(dummy_pool, min(3, len(dummy_pool))):
+    for opening_name, eco, score in dummy_pool:
         recommendations.append(
             Recommendation(
                 opening_name=opening_name,
-                opening_eco=opening_eco,
-                predicted_score=round(random.uniform(0.45, 0.60), 3),
-                confidence=round(random.uniform(0.70, 0.95), 3)
+                eco=eco,
+                predicted_score=score,
             )
         )
     
@@ -148,6 +208,14 @@ async def predict(request: PredictRequest):
         request_id=request_id,
         side=request.side,
         recommendations=recommendations,
+        stats=RecommendationStats(
+            num_openings_total=600,
+            num_openings_played=len(request.opening_stats),
+            num_openings_unplayed=1700 - len(request.opening_stats),
+            predicted_min=0.45,
+            predicted_max=0.65,
+            predicted_mean=0.52,
+        ),
         model_loaded=False,
         model_version="dummy"
     )
