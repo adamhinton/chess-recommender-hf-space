@@ -1,15 +1,13 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from typing import List, Literal, Optional
+from typing import List
 from enum import Enum
 import uuid
 import pandas as pd
 from pathlib import Path
 
 from utils.inference.pipeline import PipelineConfig, run_foldin_pipeline
-
-
 
 # --- Enums and Types ---
 
@@ -176,6 +174,7 @@ async def predict(request: PredictRequest):
         raise HTTPException(status_code=503, detail="Models not loaded")
     
     try:
+        # Run model inference on user's opening stats and get predictions
         result = run_foldin_pipeline(
             player_data=player_data,
             config=config,
@@ -233,7 +232,7 @@ async def load_models():
         ))
         print("✓ Models loaded successfully")
     except Exception as e:
-        print(f"✗ Failed to load models: {e}")
+        print(f"Failed to load models: {e}")
 
 @app.on_event("shutdown")
 async def shutdown():

@@ -461,9 +461,14 @@ def filter_valid_openings(
         print(f"{'='*80}")
         print(f"  Original: {len(df)} openings, {df['num_games'].sum():,} games")
 
-    # Filter: in training set
+    # Filter: in training set (mappings)
     in_training = df["opening_id"].isin(artifacts.valid_opening_db_ids)
     df = df[in_training].copy()
+    
+    # Filter: has stats for Bayesian shrinkage (after remapping to training IDs)
+    df["temp_training_id"] = df["opening_id"].map(artifacts.db_to_training_id)
+    has_stats = df["temp_training_id"].astype(str).isin(artifacts.opening_stats.keys())
+    df = df[has_stats].drop(columns=["temp_training_id"]).copy()
 
     # Filter: minimum games
     meets_threshold = df["num_games"] >= config.min_games_threshold
