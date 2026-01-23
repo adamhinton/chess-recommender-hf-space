@@ -322,6 +322,65 @@ def load_inference_model(
 
 
 @torch.no_grad()
+def create_foldin_player_representation(
+    model: nn.Module,
+    model_input: ModelInput,
+    device: torch.device,
+) -> torch.Tensor:
+    """
+    Create a personalized player representation for fold-in users.
+    
+    For users not in the training set, we can't use learned player embeddings.
+    Instead, we create a personalized representation by:
+    1. Taking a weighted average of their played opening embeddings
+    2. Weighting by the player's performance (scores) on each opening
+    3. Adding a rating contribution to capture skill level
+    
+    This ensures each fold-in user gets unique, personalized recommendations
+    based on their actual opening repertoire and rating, rather than all
+    fold-in users receiving identical predictions.
+    
+    Args:
+        model: The trained ChessOpeningRecommender model
+        model_input: Player data including opening IDs, scores, and rating_z
+        device: Torch device for tensor operations
+        
+    Returns:
+        A tensor of shape (1, num_factors) representing the fold-in player
+        
+    Note:
+        This function assumes model_input.training_player_id is None (fold-in user)
+    """
+    # Convert player's opening history to tensors
+    played_opening_ids = torch.tensor(
+        model_input.opening_ids, dtype=torch.long, device=device
+    )
+    played_scores = torch.tensor(
+        model_input.scores, dtype=torch.float32, device=device
+    )
+    
+    # Get embeddings for the openings this player has experience with
+    played_opening_embeds = model.opening_embedding(played_opening_ids)
+    
+    # Weight each opening embedding by the player's performance on that opening
+    # Better performing openings contribute more to the player representation
+    weights = played_scores / played_scores.sum()  # Normalize to sum to 1
+    foldin_player_embed = (played_opening_embeds * weights.unsqueeze(1)).sum(dim=0)
+    
+    # Incorporate the player's rating as an additive skill-level signal
+    # Higher rated players should get different recommendations
+    rating_z_tensor = torch.tensor(
+        [model_input.rating_z], dtype=torch.float32, device=device
+    )
+    
+    # Combine opening-based representation with rating signal
+    foldin_player_repr = foldin_player_embed + rating_z_tensor
+    
+    # Return as (1, num_factors) for easy broadcasting in batch predictions
+    return foldin_player_repr.unsqueeze(0)
+
+
+@torch.no_grad()
 def predict_all_openings(
     *,
     artifacts: PipelineArtifacts,
@@ -329,7 +388,22 @@ def predict_all_openings(
     model: Optional[nn.Module] = None,
     batch_size: Optional[int] = None,
 ) -> np.ndarray:
-    """Predict scores for every training opening (not just played ones)."""
+    """
+    Predict scores for every training opening (not just played ones).
+    
+    For fold-in users (not in training set), creates a personalized representation
+    based on their opening history and rating. For training users, uses the
+    standard forward pass with learned embeddings.
+    
+    Args:
+        artifacts: Container with model artifacts and configuration
+        model_input: Player data including opening IDs, scores, and rating
+        model: Optional pre-loaded model (will load if not provided)
+        batch_size: Optional batch size override for predictions
+        
+    Returns:
+        Array of predicted scores for all openings in the training set
+    """
     config = artifacts.config
     device = _resolve_torch_device(config.device)
     model = model or load_inference_model(artifacts, device=device)
@@ -338,12 +412,19 @@ def predict_all_openings(
     num_openings = artifacts.num_openings
     all_opening_ids = torch.arange(num_openings, dtype=torch.long, device=device)
 
-    # Fold-in users use player_id=0 (same convention as notebook 31)
-    player_id = (
-        0
-        if model_input.training_player_id is None
-        else int(model_input.training_player_id)
-    )
+    # Determine if this is a fold-in user or training user
+    is_foldin_user = model_input.training_player_id is None
+    
+    if is_foldin_user:
+        # Create personalized representation for fold-in user
+        foldin_player_repr = create_foldin_player_representation(
+            model=model, model_input=model_input, device=device
+        )
+        player_id = None  # Not used for fold-in users
+    else:
+        # Training user - use their learned player ID (IDs start at 1, not 0)
+        player_id = model_input.training_player_id
+        foldin_player_repr = None  # Not used for training users
 
     all_predictions: list[np.ndarray] = []
     for start in range(0, num_openings, batch_size):
@@ -351,11 +432,38 @@ def predict_all_openings(
         batch_len = end - start
 
         batch_opening_ids = all_opening_ids[start:end]
-        batch_player_ids = torch.full(
-            (batch_len,), player_id, dtype=torch.long, device=device
-        )
-
-        preds = model(player_ids=batch_player_ids, opening_ids=batch_opening_ids)
+        
+        if is_foldin_user:
+            # Manual forward pass for fold-in users
+            assert foldin_player_repr is not None  # Type narrowing
+            
+            # Get opening representations
+            opening_embed = model.opening_embedding(batch_opening_ids)
+            eco_letters = model.opening_eco_letters[batch_opening_ids]
+            eco_numbers = model.opening_eco_numbers[batch_opening_ids]
+            eco_letter_embed = model.eco_letter_embedding(eco_letters)
+            eco_number_embed = model.eco_number_embedding(eco_numbers)
+            opening_concat = torch.cat([opening_embed, eco_letter_embed, eco_number_embed], dim=1)
+            opening_repr = model.opening_combiner(opening_concat)
+            
+            # Expand fold-in player representation to match batch size
+            batch_player_repr = foldin_player_repr.expand(batch_len, -1)
+            
+            # Compute dot product interaction
+            interaction = (batch_player_repr * opening_repr).sum(dim=1)
+            
+            # Add opening bias and global bias (skip player bias for fold-in)
+            opening_bias = model.opening_biases(batch_opening_ids).squeeze()
+            prediction = interaction + opening_bias + model.global_bias
+            preds = torch.sigmoid(prediction)
+        else:
+            # Standard forward pass for training users
+            assert player_id is not None  # Type narrowing
+            batch_player_ids = torch.full(
+                (batch_len,), player_id, dtype=torch.long, device=device
+            )
+            preds = model(player_ids=batch_player_ids, opening_ids=batch_opening_ids)
+        
         preds = preds.detach().cpu()
         if preds.dim() > 1:
             preds = preds.squeeze()
